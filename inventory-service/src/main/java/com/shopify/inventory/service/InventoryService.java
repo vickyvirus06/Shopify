@@ -1,6 +1,10 @@
 package com.shopify.inventory.service;
 
+import com.shopify.inventory.dto.InventoryResponse;
+
+import java.util.List;
+
 public interface InventoryService {
 
-    public Boolean isInStock(String skuCode);
+    public List<InventoryResponse> isInStock(List<String> skuCodes);
 }
