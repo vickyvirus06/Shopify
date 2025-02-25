@@ -5,11 +5,15 @@ import com.shopify.order.dto.OrderLineItemsDTO;
 import com.shopify.order.dto.OrderRequest;
 import com.shopify.order.entity.Order;
 import com.shopify.order.entity.OrderLineItems;
+import com.shopify.order.event.OrderNotificationEvent;
 import com.shopify.order.repository.OrderRepository;
 import com.shopify.order.service.OrderService;
+import io.github.resilience4j.retry.annotation.Retry;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.ResponseEntity;
+import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.reactive.function.client.WebClient;
@@ -22,6 +26,7 @@ import java.util.List;
 
 @Service
 @Transactional
+@Slf4j
 public class OrderServiceImpl implements OrderService {
 
     @Autowired
@@ -30,8 +35,12 @@ public class OrderServiceImpl implements OrderService {
     @Autowired
     private WebClient.Builder webClientBuilder;
 
+    @Autowired
+    private KafkaTemplate<String, OrderNotificationEvent> kafkaTemplate;
+
     @Override
-    public void placeOrder(OrderRequest orderRequest) {
+    @Retry(name="inventory")
+    public String placeOrder(OrderRequest orderRequest) {
         Order order = new Order();
         order.setOrderNumber(UUID.randomUUID().toString());
 
@@ -48,8 +57,7 @@ public class OrderServiceImpl implements OrderService {
                         uriBuilder ->
                                 uriBuilder.queryParam("skuCodes", skuCodes).build())
                 .retrieve()
-                .bodyToMono(InventoryResponse[].class)
-                .block();
+                .bodyToMono(InventoryResponse[].class).block();
 
         assert inventoryResponseList != null;
         List<String> productsNotInStock = Arrays.stream(inventoryResponseList).filter(inventory -> !inventory.isInStock())
@@ -57,9 +65,24 @@ public class OrderServiceImpl implements OrderService {
 
         if (productsNotInStock.isEmpty()) {
             orderRepository.save(order);
+            List<OrderNotificationEvent> orderNotificationEvents = orderLineItemsList.stream().map(this::mapToOrderEventNotification).toList();
+            orderNotificationEvents.forEach(orderNotificationEvent ->
+                    kafkaTemplate.send("topic-order-place-event", orderNotificationEvent));
+
+            return "Order Successfully created";
         } else {
-            throw new IllegalArgumentException("Product is not in stock " + productsNotInStock);
+            log.error("Product is not in stock {}", productsNotInStock);
+            return "Product is not in stock " + productsNotInStock.toString();
         }
+    }
+
+    private OrderNotificationEvent mapToOrderEventNotification(OrderLineItems orderLineItem) {
+
+        return OrderNotificationEvent.builder().id(orderLineItem.getId())
+                .skuCode(orderLineItem.getSkuCode())
+                .price(orderLineItem.getPrice())
+                .quantity(orderLineItem.getQuantity())
+                .build();
     }
 
     private OrderLineItems mapToOrderLineItems(OrderLineItemsDTO orderLineItemsDTO) {
