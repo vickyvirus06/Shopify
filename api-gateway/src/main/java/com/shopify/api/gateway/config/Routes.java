@@ -23,6 +23,8 @@ public class Routes {
                         .uri("http://localhost:8761"))
                 .route("discovery-service-static", r -> r.path("/eureka/**")
                         .uri("http://localhost:8761"))
+                .route("prometheus", r -> r.path("/actuator/prometheus")
+                        .uri("lb://product-service"))
                 .build();
     }
 }
